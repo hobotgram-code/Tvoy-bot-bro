@@ -92,3 +92,36 @@ def heatmap_png(user: dict, habits: list, relapse_ts: list) -> bytes:
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
+
+
+def weight_chart_png(user: dict, metrics: list) -> bytes:
+    """Линейный график динамики веса."""
+    tz = user.get("tz_offset", 3)
+    dates = [(from_iso(m["ts"]) + timedelta(hours=tz)).date() for m in metrics]
+    values = [m["value"] for m in metrics]
+    # Если все записи в один день — раскладываем по индексу, чтобы линия читалась
+    same_day = len(set(dates)) <= 1
+    xs = list(range(len(values))) if same_day else dates
+
+    fig, ax = plt.subplots(figsize=(7, 3.6))
+    ax.plot(xs, values, marker="o", color="#2f8fed", linewidth=2)
+    ax.fill_between(xs, values, min(values), alpha=0.12, color="#2f8fed")
+    for x, y in zip(xs, values):
+        ax.annotate(f"{y:g}", (x, y), textcoords="offset points", xytext=(0, 7),
+                    ha="center", fontsize=8)
+    ax.set_title("Динамика веса, кг", fontsize=12, fontweight="bold")
+    ax.grid(True, alpha=0.25)
+    if same_day:
+        ax.set_xticks(xs)
+        ax.set_xticklabels([f"#{i+1}" for i in xs], fontsize=8)
+    else:
+        fig.autofmt_xdate(rotation=30)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()

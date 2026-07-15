@@ -51,6 +51,38 @@ CREATE TABLE IF NOT EXISTS achievements (
     unlocked_at  TEXT,
     UNIQUE(user_id, code)
 );
+
+CREATE TABLE IF NOT EXISTS photos (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id  INTEGER NOT NULL,
+    file_id  TEXT NOT NULL,
+    ts       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workouts (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id  INTEGER NOT NULL,
+    exercise TEXT NOT NULL,
+    target   INTEGER NOT NULL,
+    step     INTEGER NOT NULL,
+    sessions INTEGER DEFAULT 0,
+    UNIQUE(user_id, exercise)
+);
+
+CREATE TABLE IF NOT EXISTS affirmations (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    text    TEXT NOT NULL,
+    ts      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS metrics (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    kind    TEXT NOT NULL,
+    value   REAL NOT NULL,
+    ts      TEXT NOT NULL
+);
 """
 
 # Колонки, которые могли отсутствовать в старых базах: (таблица, колонка, тип).
@@ -68,6 +100,13 @@ _MIGRATIONS = [
     ("relapse_log", "user_id", "INTEGER"),
     ("relapse_log", "trigger", "TEXT"),
     ("relapse_log", "mood", "INTEGER"),
+    ("users", "workout_done_date", "TEXT"),
+    ("users", "vitamins_done_date", "TEXT"),
+    ("users", "morning_hour", "INTEGER"),
+    ("users", "evening_hour", "INTEGER"),
+    ("users", "workout_hour", "INTEGER"),
+    ("users", "freeze_month", "TEXT"),
+    ("users", "freeze_used", "INTEGER DEFAULT 0"),
 ]
 
 
@@ -295,6 +334,176 @@ async def leaderboard_data():
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT user_id, started_at FROM habits")
         return [dict(r) for r in await cur.fetchall()]
+
+
+# --------------------------------------------------------------------------- photos
+async def latest_photo(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM photos WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def add_photo(user_id: int, file_id: str):
+    await _exec(
+        "INSERT INTO photos (user_id, file_id, ts) VALUES (?, ?, ?)",
+        (user_id, file_id, to_iso(now_utc())),
+    )
+
+
+async def count_photos(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM photos WHERE user_id = ?", (user_id,))
+        return (await cur.fetchone())[0]
+
+
+# --------------------------------------------------------------------------- workouts
+async def ensure_workouts(user_id: int):
+    from content import EXERCISES
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM workouts WHERE user_id = ?", (user_id,))
+        if (await cur.fetchone())[0] == 0:
+            for key, _name, _emoji, start, step in EXERCISES:
+                await db.execute(
+                    "INSERT OR IGNORE INTO workouts (user_id, exercise, target, step, sessions) "
+                    "VALUES (?, ?, ?, ?, 0)",
+                    (user_id, key, start, step),
+                )
+            await db.commit()
+
+
+async def get_workouts(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM workouts WHERE user_id = ? ORDER BY id", (user_id,)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def complete_workout(user_id: int, date_str: str):
+    """Прибавляет повторения ко всем упражнениям и отмечает день выполненным."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE workouts SET target = target + step, sessions = sessions + 1 "
+            "WHERE user_id = ?",
+            (user_id,),
+        )
+        await db.execute(
+            "UPDATE users SET workout_done_date = ? WHERE user_id = ?", (date_str, user_id)
+        )
+        await db.commit()
+
+
+async def set_vitamins_done(user_id: int, date_str: str):
+    await _exec("UPDATE users SET vitamins_done_date = ? WHERE user_id = ?", (date_str, user_id))
+
+
+# --------------------------------------------------------------------------- hours
+async def set_hour(user_id: int, field: str, value: int):
+    if field not in ("morning_hour", "evening_hour", "workout_hour"):
+        return
+    await _exec(f"UPDATE users SET {field} = ? WHERE user_id = ?", (value, user_id))
+
+
+# --------------------------------------------------------------------------- affirmations
+async def add_affirmation(user_id: int, text: str):
+    await _exec(
+        "INSERT INTO affirmations (user_id, text, ts) VALUES (?, ?, ?)",
+        (user_id, text, to_iso(now_utc())),
+    )
+
+
+async def get_affirmations(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM affirmations WHERE user_id = ? ORDER BY id", (user_id,)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def delete_affirmation(aff_id: int, user_id: int):
+    await _exec("DELETE FROM affirmations WHERE id = ? AND user_id = ?", (aff_id, user_id))
+
+
+# --------------------------------------------------------------------------- metrics
+async def add_metric(user_id: int, kind: str, value: float):
+    await _exec(
+        "INSERT INTO metrics (user_id, kind, value, ts) VALUES (?, ?, ?, ?)",
+        (user_id, kind, value, to_iso(now_utc())),
+    )
+
+
+async def get_metrics(user_id: int, kind: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM metrics WHERE user_id = ? AND kind = ? ORDER BY ts",
+            (user_id, kind),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+# --------------------------------------------------------------------------- freeze
+async def use_freeze(user_id: int, month: str):
+    user = await get_user(user_id)
+    if user.get("freeze_month") == month:
+        used = (user.get("freeze_used") or 0) + 1
+    else:
+        used = 1
+    await _exec(
+        "UPDATE users SET freeze_month = ?, freeze_used = ? WHERE user_id = ?",
+        (month, used, user_id),
+    )
+
+
+def freeze_available(user: dict, month: str) -> int:
+    from content import FREEZE_PER_MONTH
+    used = user.get("freeze_used") or 0 if user.get("freeze_month") == month else 0
+    return max(0, FREEZE_PER_MONTH - used)
+
+
+async def reset_streak(habit_id: int):
+    """Мягкий сброс времени старта на «сейчас» без записи срыва (для заморозки — не нужно)."""
+    await _exec("UPDATE habits SET started_at = ? WHERE id = ?", (to_iso(now_utc()), habit_id))
+
+
+# --------------------------------------------------------------------------- export
+async def export_data(user_id: int) -> dict:
+    user = await get_user(user_id)
+    habits = await get_habits(user_id)
+    achievements = list(await get_achievements(user_id))
+    workouts = await get_workouts(user_id)
+    affirmations = await get_affirmations(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rl = await db.execute("SELECT * FROM relapse_log WHERE user_id = ?", (user_id,))
+        relapses = [dict(r) for r in await rl.fetchall()]
+        mt = await db.execute("SELECT * FROM metrics WHERE user_id = ?", (user_id,))
+        metrics = [dict(r) for r in await mt.fetchall()]
+    return {
+        "user": user,
+        "habits": habits,
+        "relapses": relapses,
+        "achievements": achievements,
+        "workouts": workouts,
+        "metrics": metrics,
+        "affirmations": affirmations,
+        "photos_count": await count_photos(user_id),
+    }
+
+
+async def relapses_since(user_id: int, since_iso: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM relapse_log WHERE user_id = ? AND ts >= ?",
+            (user_id, since_iso),
+        )
+        return (await cur.fetchone())[0]
 
 
 async def _exec(query: str, params: tuple):

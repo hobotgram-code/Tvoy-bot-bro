@@ -185,6 +185,96 @@ def diary_message(relapses: list) -> str:
     return "\n".join(lines)
 
 
+def reward_for(saved: int):
+    from content import REWARDS
+    pick = None
+    for threshold, text in REWARDS:
+        if saved >= threshold:
+            pick = (threshold, text)
+    return pick
+
+
+def report_message(data: dict) -> str:
+    """Недельный отчёт. data — заранее собранная статистика."""
+    lines = ["📅 <b>ОТЧЁТ ЗА НЕДЕЛЮ</b>", DIVIDER]
+    lines.append(f"🔥 Активных трекеров: {data['habits']}")
+    lines.append(f"⏱ Лучший текущий стрик: <b>{format_duration(data['max_secs'])}</b>")
+    if data["saved"] > 0:
+        lines.append(f"💰 Всего сэкономлено: <b>{data['saved']:,} ₽</b>".replace(",", " "))
+    lines.append(f"💥 Срывов за неделю: {data['relapses_week']}")
+    lines.append(f"🏋️ Тренировок пройдено: {data['workouts']}")
+    if data.get("quest_streak"):
+        lines.append(f"🎯 Серия квестов: {data['quest_streak']}")
+    lines.append(f"✨ Опыт: <b>{data['xp']} XP</b>  •  🏅 Ачивок: {data['achievements']}")
+    lines.append(DIVIDER)
+    if data["relapses_week"] == 0 and data["habits"] > 0:
+        lines.append("🏆 Неделя без срывов — ты машина! Так держать! 💪")
+    else:
+        lines.append("Каждая неделя — шанс стать сильнее. Вперёд! 🚀")
+    reward = reward_for(data["saved"])
+    if reward:
+        lines.append(f"\n🎁 Ты уже заслужил: <b>{reward[1]}</b>")
+    return "\n".join(lines)
+
+
+def metrics_message(weights: list, wellbeing: list) -> str:
+    lines = ["📈 <b>ЗАМЕРЫ</b>", DIVIDER]
+    if weights:
+        first = weights[0]["value"]
+        last = weights[-1]["value"]
+        diff = last - first
+        sign = "▼" if diff < 0 else ("▲" if diff > 0 else "=")
+        lines.append(f"⚖️ Вес: <b>{last:g} кг</b> (старт {first:g} кг, {sign} {abs(diff):g} кг)")
+    else:
+        lines.append("⚖️ Вес: нет записей")
+    if wellbeing:
+        avg = sum(w["value"] for w in wellbeing) / len(wellbeing)
+        lines.append(f"😊 Самочувствие: последнее {wellbeing[-1]['value']:g}/10, "
+                     f"среднее {avg:.1f}/10")
+    else:
+        lines.append("😊 Самочувствие: нет записей")
+    lines.append(DIVIDER)
+    lines.append("Записывай регулярно — динамику увидишь на графике. 📊")
+    return "\n".join(lines)
+
+
+def workout_message(workouts: list, done_today: bool) -> str:
+    from content import EXERCISES_MAP, WORKOUT_SETS
+
+    lines = ["💪 <b>ТРЕНИРОВКА НА СЕГОДНЯ</b>", DIVIDER]
+    total_sessions = 0
+    for w in workouts:
+        name, emoji, _start, _step = EXERCISES_MAP.get(
+            w["exercise"], (w["exercise"], "🏋️", 0, 1)
+        )
+        total_sessions = max(total_sessions, w["sessions"])
+        lines.append(f"{emoji} <b>{name}</b>: {WORKOUT_SETS} × {w['target']} раз")
+    lines.append(DIVIDER)
+    if done_today:
+        lines.append("✅ Сегодня уже выполнено — красавчик! Отдыхай. 🔥")
+    else:
+        lines.append("Выполнил — и цель подрастёт на следующий раз. Прогресс! 📈")
+    lines.append(f"🏋️ Тренировок пройдено: {total_sessions}")
+    return "\n".join(lines)
+
+
+def supplements_message(habits: list) -> str:
+    from content import SUPPLEMENTS, SUPPLEMENTS_DISCLAIMER
+
+    types = [h["htype"] for h in habits] if habits else []
+    keys = [t for t in ("alcohol", "junk", "smoking", "nofap") if t in types]
+    if not keys:
+        keys = ["general"]
+    lines = ["🌿 <b>ВИТАМИНЫ И ДОБАВКИ</b>", DIVIDER]
+    for k in keys:
+        block = SUPPLEMENTS[k]
+        lines.append(f"\n<b>{block['title']}</b>")
+        lines.extend(block["items"])
+    lines.append("")
+    lines.append(SUPPLEMENTS_DISCLAIMER)
+    return "\n".join(lines)
+
+
 def replacements_message(habits: list) -> str:
     from content import REPLACEMENTS, HABITS as H
 

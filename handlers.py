@@ -11,13 +11,16 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 import database as db
 import achievements
 import charts
+import ai
 from content import (
     HABITS, TIPS, BREATHING_STEPS, BREATHING_CYCLES, DISTRACTIONS, QUESTS,
-    TRIGGERS_MAP,
+    TRIGGERS_MAP, TECHNIQUES, REWARDS,
 )
 from cards import (
     progress_message, levels_message, habit_streak_seconds,
     profile_message, diary_message, replacements_message,
+    workout_message, supplements_message, report_message, metrics_message,
+    reward_for,
 )
 from utils import now_utc, format_duration
 import keyboards as kb
@@ -31,6 +34,10 @@ class Form(StatesGroup):
     why = State()
     goal_name = State()
     goal_cost = State()
+    affirmation = State()
+    weight = State()
+    mood = State()
+    ai_chat = State()
 
 
 # ---------------------------------------------------------------------------
@@ -39,8 +46,14 @@ class Form(StatesGroup):
 async def announce_achievements(bot, user_id: int):
     newly = await achievements.check_and_unlock(user_id)
     if newly:
+        text = achievements.format_new(newly)
+        # Награда за майлстоны — по сумме сэкономленного
+        stats = await achievements.gather_stats(user_id)
+        reward = reward_for(stats["saved"])
+        if reward:
+            text += f"\n\n🎁 На сэкономленное ты уже можешь купить: <b>{reward[1]}</b>"
         try:
-            await bot.send_message(user_id, achievements.format_new(newly))
+            await bot.send_message(user_id, text)
         except Exception:  # noqa: BLE001
             pass
 
@@ -125,11 +138,15 @@ async def cmd_help(message: Message):
         "🆘 Паника — экстренная помощь в момент тяги\n"
         "➕ Трекер — добавить цель\n"
         "💥 Срыв — честно отметить срыв (+ дневник)\n"
+        "💪 Тренировка — план на день с ростом повторений\n"
+        "📸 Фото — прогресс-фото для сравнения раз в неделю\n"
+        "🌿 Витамины — добавки для восстановления\n"
         "🎯 Квест — задание дня\n"
         "🏆 Профиль — XP, ранг, ачивки, рейтинг\n"
         "📔 Дневник — аналитика твоих срывов\n"
         "💡 Совет — мотивация и техники\n"
         "⚙️ Настройки — уведомления, пояс, напарник, цели\n\n"
+        "📷 Просто пришли фото в любой момент — я его сохраню.\n"
         "Помни: срыв — не конец, а урок. Главное — вернуться. 💪",
         reply_markup=kb.main_menu(),
     )
@@ -476,12 +493,48 @@ async def relapse_pick(callback: CallbackQuery):
         return
     meta = HABITS.get(habit["htype"], HABITS["custom"])
     title = habit["title"] or meta["name"]
+    user = await db.get_user(callback.from_user.id)
+    month = _local_month(user)
+    freeze_left = db.freeze_available(user, month)
+    hint = ""
+    if freeze_left > 0:
+        hint = ("\n\n❄️ Есть заморозка: спасает стрик один раз в месяц, "
+                "если это была случайность и ты сразу вернулся.")
     await callback.message.edit_text(
         f"Подтверди срыв по «{meta['emoji']} {title}».\n"
-        "Текущий стрик обнулится, но рекорд сохранится.",
-        reply_markup=kb.relapse_confirm_kb(habit_id),
+        "Текущий стрик обнулится, но рекорд сохранится." + hint,
+        reply_markup=kb.relapse_confirm_kb(habit_id, freeze_left),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("frz:"))
+async def freeze_streak(callback: CallbackQuery):
+    habit_id = int(callback.data.split(":", 1)[1])
+    habit = await db.get_habit(habit_id)
+    if not habit:
+        await callback.answer("Не найдено")
+        return
+    user = await db.get_user(callback.from_user.id)
+    month = _local_month(user)
+    if db.freeze_available(user, month) <= 0:
+        await callback.answer("Заморозки на этот месяц закончились")
+        return
+    await db.use_freeze(callback.from_user.id, month)
+    meta = HABITS.get(habit["htype"], HABITS["custom"])
+    title = habit["title"] or meta["name"]
+    await callback.message.edit_text(
+        f"❄️ <b>Стрик спасён!</b> Заморозка по «{meta['emoji']} {title}» использована.\n\n"
+        "Стрик продолжается как ни в чём не бывало. Но помни: заморозка — "
+        "аварийная кнопка, не привычка. Держись! 💪"
+    )
+    await callback.answer("Стрик сохранён ❄️")
+
+
+def _local_month(user: dict) -> str:
+    from datetime import timedelta
+    d = (now_utc() + timedelta(hours=user.get("tz_offset", 3))).date()
+    return f"{d.year}-{d.month:02d}"
 
 
 @router.callback_query(F.data.startswith("rlc:"))
@@ -749,6 +802,417 @@ async def checkin_relapse(callback: CallbackQuery):
         reply_markup=kb.relapse_kb(habits),
     )
     await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Прогресс-фото
+# ---------------------------------------------------------------------------
+@router.message(F.text == "📸 Фото")
+async def photo_menu(message: Message):
+    last = await db.latest_photo(message.from_user.id)
+    count = await db.count_photos(message.from_user.id)
+    if last:
+        from utils import from_iso
+        from datetime import timedelta
+        user = await db.get_user(message.from_user.id)
+        when = (from_iso(last["ts"]) + timedelta(hours=user["tz_offset"])).strftime("%d.%m.%Y")
+        await message.answer_photo(
+            last["file_id"],
+            caption=(f"📸 Последнее фото ({when}). Всего снимков: {count}.\n\n"
+                     "Пришли новое фото — я сохраню его и покажу это для сравнения. "
+                     "Раз в неделю буду напоминать. 📈"),
+        )
+    else:
+        await message.answer(
+            "📸 <b>Прогресс-фото</b>\n\n"
+            "Пришли своё фото (например, в зеркале). Я сохраню его и раз в неделю "
+            "буду показывать прошлый снимок, чтобы ты видел изменения. Начнём? 📷",
+        )
+
+
+@router.message(F.photo)
+async def photo_received(message: Message):
+    await db.ensure_user(message.from_user.id, message.from_user.username or "")
+    prev = await db.latest_photo(message.from_user.id)
+    file_id = message.photo[-1].file_id
+    await db.add_photo(message.from_user.id, file_id)
+    count = await db.count_photos(message.from_user.id)
+    if prev:
+        from utils import from_iso
+        from datetime import timedelta
+        user = await db.get_user(message.from_user.id)
+        when = (from_iso(prev["ts"]) + timedelta(hours=user["tz_offset"])).strftime("%d.%m.%Y")
+        await message.answer_photo(
+            prev["file_id"],
+            caption=f"✅ Новое фото сохранено (всего {count}).\n"
+                    f"👆 А так ты выглядел {when}. Виден прогресс? 💪",
+        )
+    else:
+        await message.answer(
+            "✅ Фото сохранено! Это твоя точка отсчёта. 📸\n"
+            "Через неделю пришли новое — сравним изменения. 💪",
+            reply_markup=kb.main_menu(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Тренировки
+# ---------------------------------------------------------------------------
+@router.message(F.text == "💪 Тренировка")
+async def workout_menu(message: Message):
+    await db.ensure_workouts(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
+    workouts = await db.get_workouts(message.from_user.id)
+    done = user.get("workout_done_date") == _local_date(user)
+    await message.answer(workout_message(workouts, done), reply_markup=kb.workout_kb(done))
+
+
+@router.callback_query(F.data == "wo:done")
+async def workout_done(callback: CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    today = _local_date(user)
+    if user.get("workout_done_date") == today:
+        await callback.answer("Сегодня уже отмечено ✅")
+        return
+    await db.complete_workout(callback.from_user.id, today)
+    await db.add_xp(callback.from_user.id, 20)
+    workouts = await db.get_workouts(callback.from_user.id)
+    await callback.message.edit_text(
+        "💪 <b>ТРЕНИРОВКА ЗАСЧИТАНА!</b> +20 XP 🔥\n\n"
+        "На следующий раз цель чуть выше — так растёт сила. Вот новый план:\n\n"
+        + workout_message(workouts, True)
+    )
+    await callback.answer("Красавчик! 🔥")
+    await announce_achievements(callback.bot, callback.from_user.id)
+
+
+@router.callback_query(F.data == "wo:skip")
+async def workout_skip(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "⏭ Пропуск отмечен. Ничего страшного — главное вернуться.\n"
+        "Цель осталась прежней. Завтра наверстаем! 💪"
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Витамины
+# ---------------------------------------------------------------------------
+@router.message(F.text == "🌿 Витамины")
+async def vitamins_menu(message: Message):
+    habits = await db.get_habits(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
+    done = user.get("vitamins_done_date") == _local_date(user)
+    await message.answer(supplements_message(habits), reply_markup=kb.vitamins_kb(done))
+
+
+@router.callback_query(F.data == "vit:done")
+async def vitamins_done(callback: CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    today = _local_date(user)
+    if user.get("vitamins_done_date") == today:
+        await callback.answer("Сегодня уже отмечено ✅")
+        return
+    await db.set_vitamins_done(callback.from_user.id, today)
+    await db.add_xp(callback.from_user.id, 5)
+    await callback.answer("+5 XP 🌿")
+    await callback.message.answer("✅ Витамины приняты. +5 XP. Так держать! 🌿")
+
+
+# ---------------------------------------------------------------------------
+# Время уведомлений (гибкая настройка)
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "st:hours")
+async def hours_menu(callback: CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    from config import MORNING_HOUR, EVENING_HOUR, WORKOUT_HOUR
+    m = user.get("morning_hour") if user.get("morning_hour") is not None else MORNING_HOUR
+    e = user.get("evening_hour") if user.get("evening_hour") is not None else EVENING_HOUR
+    w = user.get("workout_hour") if user.get("workout_hour") is not None else WORKOUT_HOUR
+    await callback.message.edit_text(
+        f"⏰ <b>Время уведомлений</b> (по твоему поясу UTC+{user['tz_offset']})\n\n"
+        f"🌅 Утро: {m}:00\n🌙 Вечер: {e}:00\n💪 Тренировка: {w}:00\n\n"
+        "Что изменить?",
+        reply_markup=kb.hours_menu_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("hsel:"))
+async def hours_select(callback: CallbackQuery):
+    field = callback.data.split(":", 1)[1]
+    names = {"morning_hour": "утра", "evening_hour": "вечера", "workout_hour": "тренировки"}
+    await callback.message.edit_text(
+        f"Выбери час {names.get(field, '')}:", reply_markup=kb.hours_kb(field)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("seth:"))
+async def hours_set(callback: CallbackQuery):
+    _, field, hour = callback.data.split(":")
+    await db.set_hour(callback.from_user.id, field, int(hour))
+    await hours_menu(callback)
+
+
+# ---------------------------------------------------------------------------
+# Хаб «Ещё»
+# ---------------------------------------------------------------------------
+@router.message(F.text == "🧰 Ещё")
+async def hub_menu(message: Message):
+    await message.answer(
+        "🧰 <b>Ещё возможности</b>\nВыбери, что нужно 👇",
+        reply_markup=kb.hub_kb(ai.is_available()),
+    )
+
+
+@router.callback_query(F.data == "hub:tip")
+async def hub_tip(callback: CallbackQuery):
+    await callback.message.answer(f"💡 <b>Совет</b>\n\n{random.choice(TIPS)}")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "hub:help")
+async def hub_help(callback: CallbackQuery):
+    await cmd_help(callback.message)
+    await callback.answer()
+
+
+# --- Техники
+@router.callback_query(F.data == "hub:tech")
+async def hub_tech(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🧘 <b>Техники самопомощи</b>\nВыбери — расскажу, как делать:",
+        reply_markup=kb.techniques_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tech:"))
+async def show_technique(callback: CallbackQuery):
+    idx = int(callback.data.split(":", 1)[1])
+    if 0 <= idx < len(TECHNIQUES):
+        title, text = TECHNIQUES[idx]
+        await callback.message.answer(f"<b>{title}</b>\n\n{text}")
+    await callback.answer()
+
+
+# --- Отчёт за неделю
+@router.callback_query(F.data == "hub:report")
+async def hub_report(callback: CallbackQuery):
+    data = await _build_report(callback.from_user.id)
+    await callback.message.answer(report_message(data))
+    await callback.answer()
+
+
+async def _build_report(user_id: int) -> dict:
+    from datetime import timedelta
+    from utils import to_iso
+    user = await db.get_user(user_id)
+    habits = await db.get_habits(user_id)
+    max_secs = 0
+    saved = 0
+    for h in habits:
+        secs = habit_streak_seconds(h)
+        max_secs = max(max_secs, secs)
+        if h["cost_per_day"] and h["cost_per_day"] > 0:
+            saved += int(secs / 86400 * h["cost_per_day"])
+    week_ago = to_iso(now_utc() - timedelta(days=7))
+    relapses_week = await db.relapses_since(user_id, week_ago)
+    workouts = await db.get_workouts(user_id)
+    workout_sessions = max((w["sessions"] for w in workouts), default=0)
+    unlocked = await db.get_achievements(user_id)
+    return {
+        "habits": len(habits),
+        "max_secs": max_secs,
+        "saved": saved,
+        "relapses_week": relapses_week,
+        "workouts": workout_sessions,
+        "quest_streak": user.get("quest_streak", 0),
+        "xp": user.get("xp", 0),
+        "achievements": len(unlocked),
+    }
+
+
+# --- Аффирмации
+@router.callback_query(F.data == "hub:aff")
+async def hub_aff(callback: CallbackQuery):
+    affs = await db.get_affirmations(callback.from_user.id)
+    if affs:
+        body = "\n".join(f"• {a['text']}" for a in affs[:15])
+    else:
+        body = "<i>Пока пусто. Добавь фразу, которая тебя заряжает — я буду напоминать её.</i>"
+    await callback.message.edit_text(
+        f"💬 <b>Твои аффирмации</b>\n\n{body}",
+        reply_markup=kb.affirmations_kb(bool(affs)),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "aff:add")
+async def aff_add(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(Form.affirmation)
+    await callback.message.answer(
+        "✍️ Напиши свою мотивирующую фразу.\n"
+        "<i>Например: «Я сильнее своей тяги» или «Я выбираю здоровье».</i>"
+    )
+    await callback.answer()
+
+
+@router.message(Form.affirmation)
+async def aff_input(message: Message, state: FSMContext):
+    text = (message.text or "").strip()[:200]
+    if not text:
+        await message.answer("Пустую фразу не сохранить. Попробуй ещё раз 🙂")
+        return
+    await db.add_affirmation(message.from_user.id, text)
+    await state.clear()
+    await message.answer("💬 Добавил! Буду иногда напоминать её по утрам. 🔥",
+                         reply_markup=kb.main_menu())
+
+
+@router.callback_query(F.data == "aff:rand")
+async def aff_rand(callback: CallbackQuery):
+    affs = await db.get_affirmations(callback.from_user.id)
+    if affs:
+        await callback.message.answer(f"💬 <b>{random.choice(affs)['text']}</b>")
+    await callback.answer()
+
+
+# --- Замеры (вес / самочувствие)
+@router.callback_query(F.data == "hub:metrics")
+async def hub_metrics(callback: CallbackQuery):
+    weights = await db.get_metrics(callback.from_user.id, "weight")
+    wellbeing = await db.get_metrics(callback.from_user.id, "mood")
+    await callback.message.edit_text(
+        metrics_message(weights, wellbeing), reply_markup=kb.metrics_kb(bool(weights))
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "m:weight")
+async def metric_weight_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(Form.weight)
+    await callback.message.answer("⚖️ Напиши свой вес в кг (например, <code>82.5</code>).")
+    await callback.answer()
+
+
+@router.message(Form.weight)
+async def metric_weight_input(message: Message, state: FSMContext):
+    text = (message.text or "").replace(",", ".").strip()
+    try:
+        val = float(text)
+        if not (20 <= val <= 400):
+            raise ValueError
+    except ValueError:
+        await message.answer("Нужно число от 20 до 400. Попробуй ещё раз.")
+        return
+    await db.add_metric(message.from_user.id, "weight", val)
+    await state.clear()
+    await message.answer(f"⚖️ Записал: {val:g} кг. Смотри динамику в 📈 Замеры → График.",
+                         reply_markup=kb.main_menu())
+
+
+@router.callback_query(F.data == "m:mood")
+async def metric_mood_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(Form.mood)
+    await callback.message.answer("😊 Оцени самочувствие от 1 до 10.")
+    await callback.answer()
+
+
+@router.message(Form.mood)
+async def metric_mood_input(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    try:
+        val = int(text)
+        if not (1 <= val <= 10):
+            raise ValueError
+    except ValueError:
+        await message.answer("Нужно целое число от 1 до 10.")
+        return
+    await db.add_metric(message.from_user.id, "mood", val)
+    await state.clear()
+    await message.answer(f"😊 Записал: {val}/10. Так держать!", reply_markup=kb.main_menu())
+
+
+@router.callback_query(F.data == "m:chart")
+async def metric_chart(callback: CallbackQuery):
+    await callback.answer("Рисую…")
+    user = await db.get_user(callback.from_user.id)
+    weights = await db.get_metrics(callback.from_user.id, "weight")
+    if len(weights) < 2:
+        await callback.message.answer("Нужно минимум 2 записи веса для графика.")
+        return
+    try:
+        png = charts.weight_chart_png(user, weights)
+        await callback.message.answer_photo(
+            BufferedInputFile(png, filename="weight.png"),
+            caption="📈 Динамика твоего веса.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        await callback.message.answer(f"Не удалось построить график: {exc}")
+
+
+# --- Экспорт данных
+@router.callback_query(F.data == "hub:export")
+async def hub_export(callback: CallbackQuery):
+    import json
+    data = await db.export_data(callback.from_user.id)
+    payload = json.dumps(data, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    await callback.message.answer_document(
+        BufferedInputFile(payload, filename="tvoy-bot-bro-export.json"),
+        caption="📤 Твои данные. Храни где хочешь — они твои. 🔐",
+    )
+    await callback.answer()
+
+
+# --- ИИ-собеседник
+@router.callback_query(F.data == "hub:ai")
+async def hub_ai(callback: CallbackQuery, state: FSMContext):
+    if not ai.is_available():
+        await callback.answer()
+        await callback.message.answer(
+            "🤖 ИИ-бро не настроен. Чтобы включить, задай переменную окружения "
+            "<code>ANTHROPIC_API_KEY</code> и установи пакет <code>anthropic</code>."
+        )
+        return
+    await state.set_state(Form.ai_chat)
+    await state.update_data(ai_history=[])
+    await callback.message.answer(
+        "🤖 <b>ИИ-бро на связи.</b>\n\n"
+        "Расскажи, что тревожит или где тяжело — поговорим. Я поддержу и помогу "
+        "пережить момент. Чтобы выйти — жми кнопку ниже.",
+        reply_markup=kb.ai_exit_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "ai:exit")
+async def ai_exit(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("🚪 Вышел из чата с ИИ. Возвращайся, когда нужно. 💪")
+    await callback.answer()
+
+
+@router.message(Form.ai_chat)
+async def ai_chat_message(message: Message, state: FSMContext):
+    data = await state.get_data()
+    history = data.get("ai_history", [])
+    await message.bot.send_chat_action(message.chat.id, "typing")
+    reply = await ai.ai_reply(history, message.text or "")
+    if reply is None:
+        await message.answer(
+            "🤖 Не получилось ответить (нет связи или ключа). Попробуй позже "
+            "или воспользуйся 🆘 Паникой и 🧘 Техниками.",
+            reply_markup=kb.ai_exit_kb(),
+        )
+        return
+    history = history + [
+        {"role": "user", "content": message.text or ""},
+        {"role": "assistant", "content": reply},
+    ]
+    await state.update_data(ai_history=history[-12:])
+    await message.answer(reply, reply_markup=kb.ai_exit_kb())
 
 
 # ---------------------------------------------------------------------------

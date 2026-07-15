@@ -13,3 +13,11 @@ DEFAULT_TZ_OFFSET = int(os.getenv("TZ_OFFSET", "3"))
 # Часы (по локальному времени пользователя) для утреннего и вечернего уведомления.
 MORNING_HOUR = int(os.getenv("MORNING_HOUR", "9"))
 EVENING_HOUR = int(os.getenv("EVENING_HOUR", "21"))
+
+# Напоминания о тренировке, витаминах и еженедельном фото.
+VITAMIN_HOUR = int(os.getenv("VITAMIN_HOUR", "10"))     # приём витаминов
+PHOTO_HOUR = int(os.getenv("PHOTO_HOUR", "12"))         # еженедельное фото
+PHOTO_WEEKDAY = int(os.getenv("PHOTO_WEEKDAY", "6"))    # 6 = воскресенье
+WORKOUT_HOUR = int(os.getenv("WORKOUT_HOUR", "17"))     # напоминание о тренировке
+# Дни тренировок (0=Пн … 6=Вс). По умолчанию 5 дней: Пн–Пт.
+WORKOUT_DAYS = {int(x) for x in os.getenv("WORKOUT_DAYS", "0,1,2,3,4").split(",")}
