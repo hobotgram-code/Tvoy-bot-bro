@@ -39,10 +39,20 @@ def habit_card(habit: dict) -> str:
     else:
         lines.append("📈 Максимальный уровень достигнут! 👑")
 
-    # Деньги
+    # Деньги + мечта-цель
     if habit["cost_per_day"] and habit["cost_per_day"] > 0:
         saved = int(elapsed / 86400 * habit["cost_per_day"])
         lines.append(f"💰 Сэкономлено: <b>{saved:,} ₽</b>".replace(",", " "))
+        goal = habit.get("goal")
+        goal_cost = habit.get("goal_cost") or 0
+        if goal and goal_cost > 0:
+            pct = int(min(saved / goal_cost, 1) * 100)
+            bar = progress_bar(saved, goal_cost)
+            lines.append(f"🎁 На «{goal}»: {bar} {pct}%")
+
+    # Личное «зачем»
+    if habit.get("why"):
+        lines.append(f"❤️ Ради: <i>{habit['why']}</i>")
 
     # Вехи восстановления
     reached, upcoming = milestones_status(elapsed, habit["htype"])
@@ -97,4 +107,95 @@ def levels_message() -> str:
         lines.append(f"{name} — <i>{when}</i>")
     lines.append(DIVIDER)
     lines.append("Уровни считаются отдельно для каждого трекера. Держи стрик — расти! 🚀")
+    return "\n".join(lines)
+
+
+def xp_rank(xp: int):
+    from content import XP_RANKS
+    cur = XP_RANKS[0]
+    nxt = None
+    for threshold, name in XP_RANKS:
+        if xp >= threshold:
+            cur = (threshold, name)
+        else:
+            nxt = (threshold, name)
+            break
+    return cur, nxt
+
+
+def profile_message(user: dict, unlocked: set, rank: int, total_users: int) -> str:
+    from achievements import ACHIEVEMENTS
+    from utils import plural_ru
+
+    xp = user.get("xp", 0)
+    cur, nxt = xp_rank(xp)
+    lines = ["🎖 <b>ТВОЙ ПРОФИЛЬ</b>", DIVIDER]
+    lines.append(f"⭐ Ранг: {cur[1]}")
+    lines.append(f"✨ Опыт: <b>{xp} XP</b>")
+    if nxt:
+        left = nxt[0] - xp
+        lines.append(f"📈 До «{nxt[1]}»: {progress_bar(xp, nxt[0])} (ещё {left} XP)")
+    lines.append(f"🔥 Пережито тяг: {user.get('cravings_survived', 0)}")
+    if user.get("quest_streak", 0):
+        qs = user["quest_streak"]
+        lines.append(f"🎯 Серия квестов: {qs} {plural_ru(qs, ('день', 'дня', 'дней'))}")
+    if total_users > 1 and rank:
+        lines.append(f"🏆 Рейтинг по стрику: <b>#{rank}</b> из {total_users}")
+
+    lines.append(DIVIDER)
+    lines.append(f"🏅 <b>Достижения ({len(unlocked)}/{len(ACHIEVEMENTS)})</b>")
+    for code, emoji, title, desc, _ in ACHIEVEMENTS:
+        mark = f"{emoji} <b>{title}</b> — {desc}" if code in unlocked else f"🔒 <i>{title}</i>"
+        lines.append(mark)
+    return "\n".join(lines)
+
+
+def diary_message(relapses: list) -> str:
+    from content import TRIGGERS_MAP
+    from collections import Counter
+
+    lines = ["📔 <b>ДНЕВНИК СРЫВОВ</b>", DIVIDER]
+    if not relapses:
+        lines.append("Срывов не зафиксировано. Так держать! 💪")
+        lines.append("\n<i>Когда отмечаешь срыв, я спрашиваю триггер и настроение — "
+                     "потом покажу здесь твои паттерны.</i>")
+        return "\n".join(lines)
+
+    total = len(relapses)
+    lines.append(f"Всего срывов: <b>{total}</b>")
+
+    triggers = Counter(r["trigger"] for r in relapses if r.get("trigger"))
+    if triggers:
+        lines.append("\n🎯 <b>Частые триггеры:</b>")
+        for trg, cnt in triggers.most_common(5):
+            label = TRIGGERS_MAP.get(trg, trg)
+            pct = int(cnt / total * 100)
+            lines.append(f"  {label}: {cnt} ({pct}%)")
+
+    moods = [r["mood"] for r in relapses if r.get("mood")]
+    if moods:
+        avg = sum(moods) / len(moods)
+        lines.append(f"\n😐 Среднее настроение при срыве: <b>{avg:.1f}/5</b>")
+
+    lines.append(DIVIDER)
+    top = triggers.most_common(1)
+    if top:
+        label = TRIGGERS_MAP.get(top[0][0], top[0][0])
+        lines.append(f"💡 Главный враг — <b>{label}</b>. Придумай план на этот случай заранее.")
+    return "\n".join(lines)
+
+
+def replacements_message(habits: list) -> str:
+    from content import REPLACEMENTS, HABITS as H
+
+    lines = ["💊 <b>ЗДОРОВЫЕ ЗАМЕНЫ</b>", DIVIDER]
+    if not habits:
+        types = ["custom"]
+    else:
+        types = list(dict.fromkeys(h["htype"] for h in habits))
+    for t in types:
+        meta = H.get(t, H["custom"])
+        lines.append(f"\n{meta['emoji']} <b>{meta['name']}</b>")
+        for item in REPLACEMENTS.get(t, REPLACEMENTS["custom"]):
+            lines.append(f"  • {item}")
     return "\n".join(lines)
