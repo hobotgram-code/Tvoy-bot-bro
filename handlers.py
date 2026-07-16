@@ -6,7 +6,7 @@ from aiogram import Router, F
 from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, BufferedInputFile
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaPhoto
 
 import database as db
 import achievements
@@ -86,6 +86,7 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, state: FS
         await _link_partner(message, payload)
         return
     await message.answer(WELCOME, reply_markup=kb.main_menu())
+    await _maybe_onboard(message)
 
 
 @router.message(CommandStart())
@@ -93,6 +94,41 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await db.ensure_user(message.from_user.id, message.from_user.username or "")
     await message.answer(WELCOME, reply_markup=kb.main_menu())
+    await _maybe_onboard(message)
+
+
+async def _maybe_onboard(message: Message):
+    user = await db.get_user(message.from_user.id)
+    if user and not user.get("onboarded"):
+        await message.answer(
+            "✨ Давай настрою тебя за минуту: часовой пояс (для уведомлений) "
+            "и первая цель. Или просто пользуйся меню.",
+            reply_markup=kb.onboarding_start_kb(),
+        )
+
+
+@router.callback_query(F.data == "ob:start")
+async def onboarding_start(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🕒 <b>Шаг 1/2.</b> Выбери свой часовой пояс — по нему буду слать уведомления:",
+        reply_markup=kb.onboarding_tz_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("obtz:"))
+async def onboarding_tz(callback: CallbackQuery):
+    offset = int(callback.data.split(":", 1)[1])
+    await db.set_tz(callback.from_user.id, offset)
+    await db.set_onboarded(callback.from_user.id)
+    existing = {h["htype"] for h in await db.get_habits(callback.from_user.id)
+                if h["htype"] != "custom"}
+    await callback.message.edit_text(
+        f"✅ Пояс UTC+{offset} сохранён.\n\n"
+        "🎯 <b>Шаг 2/2.</b> Что берём под контроль? Выбери первую цель:",
+        reply_markup=kb.add_habit_kb(existing),
+    )
+    await callback.answer("Настроено!")
 
 
 async def _link_partner(message: Message, payload: str):
@@ -199,7 +235,9 @@ async def show_profile(message: Message):
     user = await db.get_user(message.from_user.id)
     unlocked = await db.get_achievements(message.from_user.id)
     rank, total = await _leaderboard_rank(message.from_user.id)
-    await message.answer(profile_message(user, unlocked, rank, total))
+    habits = await db.get_habits(message.from_user.id)
+    markup = kb.profile_share_kb(habits) if habits else None
+    await message.answer(profile_message(user, unlocked, rank, total), reply_markup=markup)
 
 
 @router.message(F.text == "📔 Дневник")
@@ -383,6 +421,7 @@ async def add_habit_cb(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     hid = await db.add_habit(callback.from_user.id, htype, meta["name"], meta["default_cost"])
+    await db.set_onboarded(callback.from_user.id)
     await callback.message.edit_text(
         f"{meta['emoji']} <b>{meta['name']}</b> — трекер запущен! ⏱\n\n"
         f"<i>{meta['motto']}</i>\n\nСтрик пошёл. Загляни в 📊 Прогресс в любой момент.",
@@ -821,6 +860,7 @@ async def photo_menu(message: Message):
             caption=(f"📸 Последнее фото ({when}). Всего снимков: {count}.\n\n"
                      "Пришли новое фото — я сохраню его и покажу это для сравнения. "
                      "Раз в неделю буду напоминать. 📈"),
+            reply_markup=kb.photo_menu_kb(count >= 2),
         )
     else:
         await message.answer(
@@ -853,6 +893,27 @@ async def photo_received(message: Message):
             "Через неделю пришли новое — сравним изменения. 💪",
             reply_markup=kb.main_menu(),
         )
+
+
+@router.callback_query(F.data == "photo:compare")
+async def photo_compare(callback: CallbackQuery):
+    first = await db.first_photo(callback.from_user.id)
+    last = await db.latest_photo(callback.from_user.id)
+    if not first or not last or first["id"] == last["id"]:
+        await callback.answer("Нужно минимум 2 фото")
+        return
+    user = await db.get_user(callback.from_user.id)
+    from utils import from_iso
+    from datetime import timedelta
+    tz = user["tz_offset"]
+    d1 = (from_iso(first["ts"]) + timedelta(hours=tz)).strftime("%d.%m.%Y")
+    d2 = (from_iso(last["ts"]) + timedelta(hours=tz)).strftime("%d.%m.%Y")
+    await callback.answer("Собираю сравнение…")
+    media = [
+        InputMediaPhoto(media=first["file_id"], caption=f"📸 Было / стало\n👈 {d1}   •   {d2} 👉"),
+        InputMediaPhoto(media=last["file_id"]),
+    ]
+    await callback.message.answer_media_group(media)
 
 
 # ---------------------------------------------------------------------------
@@ -1301,6 +1362,98 @@ async def ai_chat_message(message: Message, state: FSMContext):
     ]
     await state.update_data(ai_history=history[-12:])
     await message.answer(reply, reply_markup=kb.ai_exit_kb())
+
+
+# ---------------------------------------------------------------------------
+# Экран «Сегодня»
+# ---------------------------------------------------------------------------
+async def _today_data(user_id: int) -> dict:
+    from config import WORKOUT_DAYS
+    from datetime import timedelta
+    user = await db.get_user(user_id)
+    habits = await db.get_habits(user_id)
+    today = _local_date(user)
+    local = now_utc() + timedelta(hours=user["tz_offset"])
+    max_secs = max((habit_streak_seconds(h) for h in habits), default=0)
+    quest_done = bool(user.get("quest_done")) and user.get("quest_date") == today
+    quest_text = user.get("quest_text") if user.get("quest_date") == today else None
+    return {
+        "habits": len(habits),
+        "max_secs": max_secs,
+        "quest_done": quest_done,
+        "quest_text": quest_text,
+        "is_workout_day": local.weekday() in WORKOUT_DAYS,
+        "workout_done": user.get("workout_done_date") == today,
+        "vitamins_done": user.get("vitamins_done_date") == today,
+    }
+
+
+@router.message(F.text == "📅 Сегодня")
+async def today_screen(message: Message):
+    from cards import today_message
+    data = await _today_data(message.from_user.id)
+    await message.answer(today_message(data), reply_markup=kb.today_kb(data))
+
+
+@router.callback_query(F.data == "today:vit")
+async def today_vit(callback: CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    today = _local_date(user)
+    if user.get("vitamins_done_date") != today:
+        await db.set_vitamins_done(callback.from_user.id, today)
+        await db.add_xp(callback.from_user.id, 5)
+        await callback.answer("+5 XP 🌿")
+    else:
+        await callback.answer("Уже отмечено")
+    from cards import today_message
+    data = await _today_data(callback.from_user.id)
+    await callback.message.edit_text(today_message(data), reply_markup=kb.today_kb(data))
+
+
+@router.callback_query(F.data == "today:quest")
+async def today_quest(callback: CallbackQuery):
+    await show_quest(callback.message)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "today:workout")
+async def today_workout(callback: CallbackQuery):
+    await workout_menu(callback.message)
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Шеринг-карточка достижения
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data.startswith("share:"))
+async def share_card(callback: CallbackQuery):
+    from cards import ACCENTS
+    from utils import level_info
+    habit_id = int(callback.data.split(":", 1)[1])
+    habit = await db.get_habit(habit_id)
+    if not habit:
+        await callback.answer("Не найдено")
+        return
+    await callback.answer("Готовлю карточку…")
+    meta = HABITS.get(habit["htype"], HABITS["custom"])
+    title = habit["title"] or meta["name"]
+    elapsed = habit_streak_seconds(habit)
+    days = elapsed // 86400
+    cur_level, _ = level_info(days)
+    level_text = cur_level[1].split(" ", 1)[1] if " " in cur_level[1] else cur_level[1]
+    saved = 0
+    if habit["cost_per_day"] and habit["cost_per_day"] > 0:
+        saved = int(elapsed / 86400 * habit["cost_per_day"])
+    accent = ACCENTS.get(habit["htype"], ACCENTS["custom"])
+    try:
+        png = charts.share_card_png(title, days, level_text, saved, accent)
+        await callback.message.answer_photo(
+            BufferedInputFile(png, filename="streak.png"),
+            caption="🖼 Твоя карточка достижения! Перешли её друзьям или в сторис — "
+                    "пусть видят, на что ты способен. 💪🔥",
+        )
+    except Exception as exc:  # noqa: BLE001
+        await callback.message.answer(f"Не удалось создать карточку: {exc}")
 
 
 # ---------------------------------------------------------------------------

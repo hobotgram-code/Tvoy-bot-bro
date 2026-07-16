@@ -19,10 +19,10 @@ def _kb(rows) -> ReplyKeyboardMarkup:
 
 def main_menu() -> ReplyKeyboardMarkup:
     return _kb([
-        ["📊 Прогресс", "🆘 Паника"],
-        ["💥 Срыв", "🎯 Мои цели"],
-        ["💪 Здоровье", "🎮 Мотивация"],
-        ["🧰 Ещё", "⚙️ Настройки"],
+        ["📅 Сегодня", "📊 Прогресс"],
+        ["🆘 Паника", "💥 Срыв"],
+        ["🎯 Мои цели", "💪 Здоровье"],
+        ["🎮 Мотивация", "🧰 Ещё"],
     ])
 
 
@@ -52,9 +52,61 @@ def motivation_menu() -> ReplyKeyboardMarkup:
 
 def more_menu() -> ReplyKeyboardMarkup:
     return _kb([
-        ["📤 Экспорт", "🤖 ИИ-бро"],
-        ["❓ Помощь", "🔙 Назад"],
+        ["⚙️ Настройки", "📤 Экспорт"],
+        ["🤖 ИИ-бро", "❓ Помощь"],
+        ["🔙 Назад"],
     ])
+
+
+def today_kb(data: dict) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if not data["vitamins_done"]:
+        kb.button(text="✅ Принял витамины", callback_data="today:vit")
+    if not data["quest_done"]:
+        kb.button(text="🎯 Открыть квест", callback_data="today:quest")
+    if data["is_workout_day"] and not data["workout_done"]:
+        kb.button(text="💪 К тренировке", callback_data="today:workout")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def profile_share_kb(habits: list) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for h in habits:
+        meta = HABITS.get(h["htype"], HABITS["custom"])
+        title = h["title"] or meta["name"]
+        kb.button(text=f"🖼 Карточка: {meta['emoji']} {title}",
+                  callback_data=f"share:{h['id']}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def photo_menu_kb(has_two: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if has_two:
+        kb.button(text="🖼 Было / стало", callback_data="photo:compare")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def onboarding_start_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🚀 Быстрая настройка", callback_data="ob:start")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def onboarding_tz_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    zones = [
+        ("Калининград +2", 2), ("Москва +3", 3), ("Самара +4", 4),
+        ("Екатеринбург +5", 5), ("Омск +6", 6), ("Красноярск +7", 7),
+        ("Иркутск +8", 8), ("Владивосток +10", 10),
+    ]
+    for label, off in zones:
+        kb.button(text=label, callback_data=f"obtz:{off}")
+    kb.adjust(2)
+    return kb.as_markup()
 
 
 def hub_kb(ai_on: bool) -> InlineKeyboardMarkup:

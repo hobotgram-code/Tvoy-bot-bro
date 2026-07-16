@@ -185,6 +185,49 @@ def diary_message(relapses: list) -> str:
     return "\n".join(lines)
 
 
+# Цвета-акценты для карточек шеринга по типу привычки
+ACCENTS = {
+    "smoking": "#ff6b6b",
+    "alcohol": "#ffa94d",
+    "nofap": "#845ef7",
+    "junk": "#51cf66",
+    "custom": "#2f8fed",
+}
+
+
+def today_message(data: dict) -> str:
+    def mark(done, active=True):
+        if not active:
+            return "➖"
+        return "✅" if done else "⏳"
+
+    lines = ["📅 <b>СЕГОДНЯ</b>", DIVIDER]
+    if data["habits"]:
+        lines.append(f"🔥 Лучший стрик: <b>{format_duration(data['max_secs'])}</b>")
+        lines.append("")
+    lines.append(f"{mark(data['quest_done'])} 🎯 Квест дня")
+    if data.get("quest_text") and not data["quest_done"]:
+        lines.append(f"      <i>{data['quest_text']}</i>")
+    lines.append(f"{mark(data['workout_done'], data['is_workout_day'])} 💪 Тренировка"
+                 + ("" if data["is_workout_day"] else " <i>(сегодня выходной)</i>"))
+    lines.append(f"{mark(data['vitamins_done'])} 🌿 Витамины")
+    lines.append(DIVIDER)
+
+    done_cnt = sum([
+        data["quest_done"],
+        data["vitamins_done"],
+        data["workout_done"] or not data["is_workout_day"],
+    ])
+    total = 3
+    bar = progress_bar(done_cnt, total)
+    lines.append(f"Прогресс дня: {bar} {done_cnt}/{total}")
+    if done_cnt == total:
+        lines.append("🏆 Все задачи закрыты — идеальный день! 💪")
+    else:
+        lines.append("Отметь оставшееся кнопками ниже 👇")
+    return "\n".join(lines)
+
+
 def reward_for(saved: int):
     from content import REWARDS
     pick = None

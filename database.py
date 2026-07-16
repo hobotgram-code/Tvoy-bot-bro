@@ -107,6 +107,7 @@ _MIGRATIONS = [
     ("users", "workout_hour", "INTEGER"),
     ("users", "freeze_month", "TEXT"),
     ("users", "freeze_used", "INTEGER DEFAULT 0"),
+    ("users", "onboarded", "INTEGER DEFAULT 0"),
 ]
 
 
@@ -172,6 +173,10 @@ async def inc_cravings(user_id: int):
 
 async def set_partner(user_id: int, partner_id):
     await _exec("UPDATE users SET partner_id = ? WHERE user_id = ?", (partner_id, user_id))
+
+
+async def set_onboarded(user_id: int):
+    await _exec("UPDATE users SET onboarded = 1 WHERE user_id = ?", (user_id,))
 
 
 # --------------------------------------------------------------------------- habits
@@ -342,6 +347,16 @@ async def latest_photo(user_id: int):
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM photos WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def first_photo(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM photos WHERE user_id = ? ORDER BY id ASC LIMIT 1", (user_id,)
         )
         row = await cur.fetchone()
         return dict(row) if row else None

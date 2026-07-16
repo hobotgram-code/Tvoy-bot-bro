@@ -11,8 +11,9 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 import database as db
 from config import (
     MORNING_HOUR, EVENING_HOUR, VITAMIN_HOUR, WORKOUT_HOUR, WORKOUT_DAYS,
-    PHOTO_HOUR, PHOTO_WEEKDAY,
+    PHOTO_HOUR, PHOTO_WEEKDAY, BACKUP_HOUR, BACKUP_WEEKDAY,
 )
+from aiogram.types import BufferedInputFile
 from content import MORNING_LINES, EVENING_LINES, WORKOUT_LINES, VITAMIN_LINES
 from cards import progress_message
 import keyboards as kb
@@ -42,6 +43,8 @@ async def hourly_check(bot: Bot):
                 await _maybe_send_vitamins(bot, user, today)
             elif hour == PHOTO_HOUR and weekday == PHOTO_WEEKDAY:
                 await _send_photo_reminder(bot, user)
+            elif hour == BACKUP_HOUR and weekday == BACKUP_WEEKDAY:
+                await _send_backup(bot, user)
             elif hour == workout and weekday in WORKOUT_DAYS:
                 await _maybe_send_workout(bot, user, today)
             elif hour == RISK_HOUR:
@@ -68,6 +71,22 @@ async def _maybe_send_workout(bot: Bot, user: dict, today: str):
     from cards import workout_message
     text = random.choice(WORKOUT_LINES) + "\n\n" + workout_message(workouts, False)
     await bot.send_message(user["user_id"], text, reply_markup=kb.workout_kb(False))
+
+
+async def _send_backup(bot: Bot, user: dict):
+    """Еженедельный бэкап личных данных пользователю в виде JSON-файла."""
+    import json
+    habits = await db.get_habits(user["user_id"])
+    if not habits:
+        return
+    data = await db.export_data(user["user_id"])
+    payload = json.dumps(data, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    await bot.send_document(
+        user["user_id"],
+        BufferedInputFile(payload, filename="tvoy-bot-bro-backup.json"),
+        caption="☁️ Еженедельный бэкап твоих данных. Сохрани файл — на случай, "
+                "если что-то пойдёт не так. 🔐",
+    )
 
 
 async def _send_photo_reminder(bot: Bot, user: dict):

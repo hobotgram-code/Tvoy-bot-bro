@@ -21,3 +21,7 @@ PHOTO_WEEKDAY = int(os.getenv("PHOTO_WEEKDAY", "6"))    # 6 = воскресен
 WORKOUT_HOUR = int(os.getenv("WORKOUT_HOUR", "17"))     # напоминание о тренировке
 # Дни тренировок (0=Пн … 6=Вс). По умолчанию 5 дней: Пн–Пт.
 WORKOUT_DAYS = {int(x) for x in os.getenv("WORKOUT_DAYS", "0,1,2,3,4").split(",")}
+
+# Еженедельный авто-бэкап данных пользователю (JSON в Telegram).
+BACKUP_HOUR = int(os.getenv("BACKUP_HOUR", "11"))
+BACKUP_WEEKDAY = int(os.getenv("BACKUP_WEEKDAY", "6"))  # 6 = воскресенье
