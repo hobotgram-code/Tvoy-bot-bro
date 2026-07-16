@@ -958,11 +958,95 @@ async def hours_set(callback: CallbackQuery):
 # ---------------------------------------------------------------------------
 # Хаб «Ещё»
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Навигация по подменю (категории + Назад)
+# ---------------------------------------------------------------------------
+@router.message(F.text == "🎯 Мои цели")
+async def nav_goals(message: Message):
+    await message.answer("🎯 <b>Мои цели</b>\nТрекеры, дневник и уровни 👇",
+                         reply_markup=kb.goals_menu())
+
+
+@router.message(F.text == "💪 Здоровье")
+async def nav_health(message: Message):
+    await message.answer("💪 <b>Здоровье</b>\nТренировки, витамины, фото и замеры 👇",
+                         reply_markup=kb.health_menu())
+
+
+@router.message(F.text == "🎮 Мотивация")
+async def nav_motivation(message: Message):
+    await message.answer("🎮 <b>Мотивация</b>\nПрофиль, квесты, отчёты и техники 👇",
+                         reply_markup=kb.motivation_menu())
+
+
 @router.message(F.text == "🧰 Ещё")
-async def hub_menu(message: Message):
+async def nav_more(message: Message):
+    await message.answer("🧰 <b>Ещё</b>\nЭкспорт, ИИ-бро и помощь 👇",
+                         reply_markup=kb.more_menu())
+
+
+@router.message(F.text == "🔙 Назад")
+async def nav_back(message: Message):
+    await message.answer("🏠 Главное меню 👇", reply_markup=kb.main_menu())
+
+
+# --- Текстовые входы для пунктов, живущих в подменю
+@router.message(F.text == "📈 Замеры")
+async def nav_metrics(message: Message):
+    weights = await db.get_metrics(message.from_user.id, "weight")
+    wellbeing = await db.get_metrics(message.from_user.id, "mood")
+    await message.answer(metrics_message(weights, wellbeing),
+                         reply_markup=kb.metrics_kb(bool(weights)))
+
+
+@router.message(F.text == "📅 Отчёт")
+async def nav_report(message: Message):
+    data = await _build_report(message.from_user.id)
+    await message.answer(report_message(data))
+
+
+@router.message(F.text == "🧘 Техники")
+async def nav_tech(message: Message):
+    await message.answer("🧘 <b>Техники самопомощи</b>\nВыбери — расскажу, как делать:",
+                         reply_markup=kb.techniques_kb())
+
+
+@router.message(F.text == "💬 Аффирмации")
+async def nav_aff(message: Message):
+    affs = await db.get_affirmations(message.from_user.id)
+    if affs:
+        body = "\n".join(f"• {a['text']}" for a in affs[:15])
+    else:
+        body = "<i>Пока пусто. Добавь фразу, которая тебя заряжает.</i>"
+    await message.answer(f"💬 <b>Твои аффирмации</b>\n\n{body}",
+                         reply_markup=kb.affirmations_kb(bool(affs)))
+
+
+@router.message(F.text == "📤 Экспорт")
+async def nav_export(message: Message):
+    import json
+    data = await db.export_data(message.from_user.id)
+    payload = json.dumps(data, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    await message.answer_document(
+        BufferedInputFile(payload, filename="tvoy-bot-bro-export.json"),
+        caption="📤 Твои данные. Храни где хочешь — они твои. 🔐",
+    )
+
+
+@router.message(F.text == "🤖 ИИ-бро")
+async def nav_ai(message: Message, state: FSMContext):
+    if not ai.is_available():
+        await message.answer(
+            "🤖 ИИ-бро не настроен. Чтобы включить, задай переменную окружения "
+            "<code>ANTHROPIC_API_KEY</code> и установи пакет <code>anthropic</code>."
+        )
+        return
+    await state.set_state(Form.ai_chat)
+    await state.update_data(ai_history=[])
     await message.answer(
-        "🧰 <b>Ещё возможности</b>\nВыбери, что нужно 👇",
-        reply_markup=kb.hub_kb(ai.is_available()),
+        "🤖 <b>ИИ-бро на связи.</b>\n\nРасскажи, что тревожит — поговорим. "
+        "Чтобы выйти — жми кнопку ниже.",
+        reply_markup=kb.ai_exit_kb(),
     )
 
 
@@ -1196,6 +1280,10 @@ async def ai_exit(callback: CallbackQuery, state: FSMContext):
 
 @router.message(Form.ai_chat)
 async def ai_chat_message(message: Message, state: FSMContext):
+    if (message.text or "").strip() in ("🔙 Назад", "🏠 Главное меню"):
+        await state.clear()
+        await message.answer("🏠 Главное меню 👇", reply_markup=kb.main_menu())
+        return
     data = await state.get_data()
     history = data.get("ai_history", [])
     await message.bot.send_chat_action(message.chat.id, "typing")

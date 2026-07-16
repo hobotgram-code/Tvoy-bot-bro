@@ -9,19 +9,52 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from content import HABITS, TRIGGERS, MOODS
 
 
-def main_menu() -> ReplyKeyboardMarkup:
+def _kb(rows) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📊 Прогресс"), KeyboardButton(text="🆘 Паника")],
-            [KeyboardButton(text="➕ Трекер"), KeyboardButton(text="💥 Срыв")],
-            [KeyboardButton(text="💪 Тренировка"), KeyboardButton(text="📸 Фото")],
-            [KeyboardButton(text="🌿 Витамины"), KeyboardButton(text="🎯 Квест")],
-            [KeyboardButton(text="🏆 Профиль"), KeyboardButton(text="📔 Дневник")],
-            [KeyboardButton(text="🧰 Ещё"), KeyboardButton(text="⚙️ Настройки")],
-        ],
+        keyboard=[[KeyboardButton(text=t) for t in row] for row in rows],
         resize_keyboard=True,
         input_field_placeholder="Выбери действие…",
     )
+
+
+def main_menu() -> ReplyKeyboardMarkup:
+    return _kb([
+        ["📊 Прогресс", "🆘 Паника"],
+        ["💥 Срыв", "🎯 Мои цели"],
+        ["💪 Здоровье", "🎮 Мотивация"],
+        ["🧰 Ещё", "⚙️ Настройки"],
+    ])
+
+
+def goals_menu() -> ReplyKeyboardMarkup:
+    return _kb([
+        ["➕ Трекер", "📔 Дневник"],
+        ["🏆 Уровни", "🔙 Назад"],
+    ])
+
+
+def health_menu() -> ReplyKeyboardMarkup:
+    return _kb([
+        ["💪 Тренировка", "🌿 Витамины"],
+        ["📸 Фото", "📈 Замеры"],
+        ["🔙 Назад"],
+    ])
+
+
+def motivation_menu() -> ReplyKeyboardMarkup:
+    return _kb([
+        ["🏆 Профиль", "🎯 Квест"],
+        ["📅 Отчёт", "🧘 Техники"],
+        ["💬 Аффирмации", "💡 Совет"],
+        ["🔙 Назад"],
+    ])
+
+
+def more_menu() -> ReplyKeyboardMarkup:
+    return _kb([
+        ["📤 Экспорт", "🤖 ИИ-бро"],
+        ["❓ Помощь", "🔙 Назад"],
+    ])
 
 
 def hub_kb(ai_on: bool) -> InlineKeyboardMarkup:
